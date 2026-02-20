@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                 String          @id @default(cuid())
+  email              String          @unique
+  name               String?
+  googleAccessToken  String?         @db.Text
+  googleRefreshToken String?         @db.Text
+  tokenExpiry        DateTime?
+  createdAt          DateTime        @default(now())
+  contacts           Contact[]
+  interactions       Interaction[]
+  briefs             Brief[]
+  followUpDrafts     FollowUpDraft[]
+}
+
+model Contact {
+  id                String          @id @default(cuid())
+  userId            String
+  email             String
+  name              String?
+  lastInteractionAt DateTime?
+  score             Int             @default(50)
+  riskLabel         String          @default("Warm")
+  createdAt         DateTime        @default(now())
+  user              User            @relation(fields: [userId], references: [id])
+  interactions      Interaction[]
+  followUpDrafts    FollowUpDraft[]
+
+  @@unique([userId, email])
+  @@index([userId, score])
+}
+
+model Interaction {
+  id        String   @id @default(cuid())
+  userId    String
+  contactId String
+  type      String
+  subject   String?
+  snippet   String?  @db.Text
+  timestamp DateTime
+  threadId  String?
+  user      User     @relation(fields: [userId], references: [id])
+  contact   Contact  @relation(fields: [contactId], references: [id])
+
+  @@index([contactId, timestamp])
+}
+
+model Brief {
+  id          String   @id @default(cuid())
+  userId      String
+  content     String   @db.Text
+  generatedAt DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+model FollowUpDraft {
+  id          String   @id @default(cuid())
+  userId      String
+  contactId   String
+  subject     String
+  body        String   @db.Text
+  generatedAt DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
+  contact     Contact  @relation(fields: [contactId], references: [id])
+}
