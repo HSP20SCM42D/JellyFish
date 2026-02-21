@@ -24,6 +24,11 @@ export async function POST() {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const status = message.includes("sign in") || message.includes("Unauthorized")
+      ? 401
+      : message.includes("not enabled") || message.includes("access denied")
+        ? 403
+        : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

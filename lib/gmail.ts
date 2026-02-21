@@ -1,6 +1,39 @@
 import { google } from "googleapis";
+import { GaxiosError } from "gaxios";
 import { prisma } from "@/lib/prisma";
 import { getValidAccessToken } from "@/lib/auth";
+
+export function parseGoogleApiError(err: unknown): Error {
+  if (err instanceof GaxiosError) {
+    const status = err.response?.status;
+    const message = err.response?.data?.error?.message ?? err.message;
+
+    if (status === 403 && message.includes("has not been used in project")) {
+      return new Error(
+        "Gmail API is not enabled for your Google Cloud project. " +
+          "Enable it at https://console.cloud.google.com/apis/library/gmail.googleapis.com and wait a few minutes."
+      );
+    }
+    if (status === 403 && message.includes("calendar")) {
+      return new Error(
+        "Calendar API is not enabled for your Google Cloud project. " +
+          "Enable it at https://console.cloud.google.com/apis/library/calendar-json.googleapis.com and wait a few minutes."
+      );
+    }
+    if (status === 403) {
+      return new Error(`Google API access denied: ${message}`);
+    }
+    if (status === 401) {
+      return new Error("Google authentication expired. Please sign out and sign in again.");
+    }
+    if (status === 429) {
+      return new Error("Google API rate limit exceeded. Please wait a few minutes and try again.");
+    }
+    return new Error(`Google API error (${status}): ${message}`);
+  }
+  if (err instanceof Error) return err;
+  return new Error("Unknown error during Google API call");
+}
 
 function parseEmailAddress(header: string): { name: string; email: string } {
   const match = header.match(/^(.*?)\s*<([^>]+)>$/);
@@ -35,17 +68,21 @@ export async function ingestGmail(
   const messageIds: string[] = [];
   let pageToken: string | undefined;
 
-  do {
-    const res = await gmail.users.messages.list({
-      userId: "me",
-      q: `after:${afterStr}`,
-      maxResults: 500,
-      pageToken,
-    });
-    const msgs = res.data.messages ?? [];
-    messageIds.push(...msgs.map((m) => m.id!).filter(Boolean));
-    pageToken = res.data.nextPageToken ?? undefined;
-  } while (pageToken);
+  try {
+    do {
+      const res = await gmail.users.messages.list({
+        userId: "me",
+        q: `after:${afterStr}`,
+        maxResults: 500,
+        pageToken,
+      });
+      const msgs = res.data.messages ?? [];
+      messageIds.push(...msgs.map((m) => m.id!).filter(Boolean));
+      pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+  } catch (err) {
+    throw parseGoogleApiError(err);
+  }
 
   let contactsUpserted = 0;
   let interactionsCreated = 0;

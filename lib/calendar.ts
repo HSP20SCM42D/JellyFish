@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 import { prisma } from "@/lib/prisma";
 import { getValidAccessToken } from "@/lib/auth";
+import { parseGoogleApiError } from "@/lib/gmail";
 
 export async function ingestCalendar(
   userId: string,
@@ -22,71 +23,75 @@ export async function ingestCalendar(
   let interactionsCreated = 0;
   let pageToken: string | undefined;
 
-  do {
-    const res = await calendar.events.list({
-      calendarId: "primary",
-      timeMin: timeMin.toISOString(),
-      timeMax: timeMax.toISOString(),
-      maxResults: 250,
-      singleEvents: true,
-      pageToken,
-    });
+  try {
+    do {
+      const res = await calendar.events.list({
+        calendarId: "primary",
+        timeMin: timeMin.toISOString(),
+        timeMax: timeMax.toISOString(),
+        maxResults: 250,
+        singleEvents: true,
+        pageToken,
+      });
 
-    const events = res.data.items ?? [];
-    pageToken = res.data.nextPageToken ?? undefined;
+      const events = res.data.items ?? [];
+      pageToken = res.data.nextPageToken ?? undefined;
 
-    for (const event of events) {
-      const attendees = event.attendees ?? [];
-      if (attendees.length === 0) continue;
+      for (const event of events) {
+        const attendees = event.attendees ?? [];
+        if (attendees.length === 0) continue;
 
-      const startStr =
-        event.start?.dateTime ?? event.start?.date ?? null;
-      if (!startStr) continue;
-      const timestamp = new Date(startStr);
-      if (isNaN(timestamp.getTime())) continue;
+        const startStr =
+          event.start?.dateTime ?? event.start?.date ?? null;
+        if (!startStr) continue;
+        const timestamp = new Date(startStr);
+        if (isNaN(timestamp.getTime())) continue;
 
-      for (const attendee of attendees) {
-        const email = attendee.email?.toLowerCase();
-        if (!email || email === userEmail.toLowerCase()) continue;
+        for (const attendee of attendees) {
+          const email = attendee.email?.toLowerCase();
+          if (!email || email === userEmail.toLowerCase()) continue;
 
-        const contact = await prisma.contact.upsert({
-          where: { userId_email: { userId, email } },
-          update: {
-            name: attendee.displayName || undefined,
-            lastInteractionAt: timestamp > new Date() ? undefined : timestamp,
-          },
-          create: {
-            userId,
-            email,
-            name: attendee.displayName || undefined,
-            lastInteractionAt: timestamp > new Date() ? undefined : timestamp,
-          },
-        });
-        contactsUpserted++;
+          const contact = await prisma.contact.upsert({
+            where: { userId_email: { userId, email } },
+            update: {
+              name: attendee.displayName || undefined,
+              lastInteractionAt: timestamp > new Date() ? undefined : timestamp,
+            },
+            create: {
+              userId,
+              email,
+              name: attendee.displayName || undefined,
+              lastInteractionAt: timestamp > new Date() ? undefined : timestamp,
+            },
+          });
+          contactsUpserted++;
 
-        const existing = await prisma.interaction.findFirst({
-          where: {
-            contactId: contact.id,
-            type: "MEETING",
-            timestamp,
-            subject: event.summary ?? null,
-          },
-        });
-        if (existing) continue;
+          const existing = await prisma.interaction.findFirst({
+            where: {
+              contactId: contact.id,
+              type: "MEETING",
+              timestamp,
+              subject: event.summary ?? null,
+            },
+          });
+          if (existing) continue;
 
-        await prisma.interaction.create({
-          data: {
-            userId,
-            contactId: contact.id,
-            type: "MEETING",
-            subject: event.summary || "Meeting",
-            timestamp,
-          },
-        });
-        interactionsCreated++;
+          await prisma.interaction.create({
+            data: {
+              userId,
+              contactId: contact.id,
+              type: "MEETING",
+              subject: event.summary || "Meeting",
+              timestamp,
+            },
+          });
+          interactionsCreated++;
+        }
       }
-    }
-  } while (pageToken);
+    } while (pageToken);
+  } catch (err) {
+    throw parseGoogleApiError(err);
+  }
 
   return { contactsUpserted, interactionsCreated };
 }
