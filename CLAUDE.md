@@ -430,3 +430,373 @@ Three card sections stacked or in a grid:
 5. Navigate to Today → Click "Generate Brief" → See executive briefing with action items
 
 If this full flow works end-to-end with real data, the MVP is complete.
+
+# Jellyfish Executive OS — Stage 2: Executive Command Dashboard
+
+You are upgrading the existing Jellyfish Executive OS MVP to Stage 2. The app already has working auth, Gmail/Calendar ingestion, scoring, AI brief/draft generation, and basic pages. **Do not rebuild what exists.** Refactor and enhance.
+
+This stage transforms the dashboard into an **Action Command Center** — not a reporting page.
+
+---
+
+## GROUND RULES
+
+- Read the existing codebase first before making any changes. Understand the current schema, routes, and components.
+- Do NOT modify the Prisma schema unless explicitly stated. The existing models (User, Contact, Interaction, Brief, FollowUpDraft) remain unchanged.
+- Do NOT touch auth, ingestion, or scoring logic — they already work.
+- Commit after each major step.
+- Fix all TypeScript errors before moving to the next step.
+- Every new API route needs try/catch and proper error responses.
+
+---
+
+## STEP 1 — Aggregated Dashboard API
+
+Create `GET /app/api/dashboard/route.ts` — a single endpoint that returns everything the dashboard needs in one call.
+
+### Response shape:
+
+```ts
+interface DashboardResponse {
+  lastSyncAt: string | null;
+  atRiskContacts: {
+    id: string;
+    name: string | null;
+    email: string;
+    score: number;
+    riskLabel: string;
+    lastInteractionAt: string | null;
+  }[];
+  outboundPendingContacts: {
+    id: string;
+    name: string | null;
+    email: string;
+    score: number;
+    riskLabel: string;
+    lastOutboundAt: string;
+    daysPending: number;
+  }[];
+  upcomingMeetings: {
+    id: string;
+    subject: string | null;
+    timestamp: string;
+    attendees: {
+      contactId: string;
+      name: string | null;
+      email: string;
+      riskLabel: string;
+    }[];
+  }[];
+  quickStats: {
+    totalContacts: number;
+    atRiskCount: number;
+    outboundPendingCount: number;
+    interactionsLast7Days: number;
+  };
+  latestBrief: {
+    id: string;
+    content: string;
+    generatedAt: string;
+  } | null;
+}
+```
+
+### Query logic:
+
+1. **atRiskContacts**: Top 5 contacts where `riskLabel = "At Risk"`, sorted by score ascending (worst first).
+2. **outboundPendingContacts**: Contacts where the most recent interaction is `EMAIL_OUT` with no newer `EMAIL_IN` from that contact. Calculate `daysPending` as days since that last outbound email. Limit to 5. **Exclude any contact already in atRiskContacts** to avoid duplicates.
+3. **upcomingMeetings**: Interactions where `type = "MEETING"` and `timestamp` is between now and +7 days. For each meeting, find all contacts that share the same `subject` and `timestamp` (these are the attendees). Limit to 5 meetings.
+4. **quickStats**: Simple aggregate counts from the DB.
+5. **latestBrief**: Most recent Brief for the user, or null.
+6. **lastSyncAt**: Most recent `Interaction.timestamp` as a proxy for last sync time (or track this separately if you prefer).
+
+### Performance:
+
+- Target < 500ms. Use efficient Prisma queries — `select` only needed fields, avoid N+1 queries.
+- Use `Promise.all` to run independent queries in parallel.
+
+**Checkpoint:** Hit `GET /api/dashboard` and verify the full JSON response with real data.
+
+---
+
+## STEP 2 — Draft Sheet (Global Slide-Over Component)
+
+Create a reusable `DraftSheet` component using shadcn/ui `Sheet` (side panel that slides in from the right).
+
+### File: `/components/draft-sheet.tsx`
+
+### Props:
+
+```ts
+interface DraftSheetProps {
+  contactId: string;
+  contactName: string | null;
+  contactEmail: string;
+  contactScore: number;
+  contactRiskLabel: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+```
+
+### Behavior:
+
+1. When opened, immediately call `POST /api/draft` with the `contactId`.
+2. While loading: show skeleton placeholders for subject and body fields.
+3. On success: populate an **editable** subject input and body textarea with the generated draft.
+4. Buttons at the bottom:
+   - **Copy to Clipboard** — copies subject + body to clipboard, shows brief "Copied!" confirmation.
+   - **Regenerate** — calls `/api/draft` again, replaces content, creates a new DB entry.
+   - **Close** — closes the sheet.
+5. Header shows: contact name, email, score badge (color-coded), risk label badge.
+6. Handle errors gracefully with an inline error message and retry option.
+
+### Styling:
+
+- Sheet slides from the right, width ~450px.
+- Dark theme consistent with the app: `bg-zinc-900`, `border-zinc-800`.
+- Subject input and body textarea styled with dark backgrounds (`bg-zinc-950`), subtle borders.
+
+**Checkpoint:** You can open the DraftSheet from a test button, it generates a draft, displays it, and copy/regenerate work.
+
+---
+
+## STEP 3 — Telemetry Utility
+
+Create `/lib/telemetry.ts` — a simple event logging utility.
+
+For now, this just logs to the console in a structured format. It's a stub for future analytics.
+
+```ts
+export function trackEvent(event: string, properties?: Record<string, any>) {
+  console.log(`[TELEMETRY] ${event}`, properties ?? {});
+}
+```
+
+Track these events throughout the dashboard:
+
+- `dashboard.view` — when dashboard page loads
+- `dashboard.draft.clicked` — when Draft button is clicked (include contactId)
+- `dashboard.draft.copied` — when Copy to Clipboard is used
+- `dashboard.draft.regenerated` — when Regenerate is clicked
+- `dashboard.brief.generated` — when Generate Brief is clicked
+- `dashboard.meeting.clicked` — when a meeting or attendee is clicked
+
+Wire these into the appropriate components as you build them.
+
+**Checkpoint:** Console shows structured telemetry events as you interact with the dashboard.
+
+---
+
+## STEP 4 — Dashboard Page Redesign
+
+Completely rebuild `/app/dashboard/page.tsx`. This is the core of Stage 2.
+
+### Data Fetching:
+
+- Call `GET /api/dashboard` on page load (client-side fetch with loading state).
+- Show full-page skeleton while loading.
+
+### Layout:
+
+Two-column responsive layout:
+
+- **Left column (70%)**: At-Risk, Outbound Pending, Upcoming Meetings (stacked vertically).
+- **Right column (30%)**: Quick Stats, Executive Brief (stacked vertically).
+- On mobile/small screens: single column, right column content moves below left column.
+
+Use CSS grid: `grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6`
+
+---
+
+### Card A — At-Risk Relationships (Left Column)
+
+**Header:** "At-Risk Relationships" with a red dot indicator and count badge.
+
+**Content:** List of up to 5 contacts. Each row is a clickable card/row with:
+
+- **Left side:** Name (bold), email (muted), last interaction date (e.g., "Last contact: 12 days ago").
+- **Right side:** Score badge (color-coded number), "Draft Follow-Up" button (small, outline style).
+
+**Interactions:**
+
+- Click the row (not the button) → navigate to `/people/[id]`.
+- Click "Draft Follow-Up" → open DraftSheet for that contact (stop event propagation so it doesn't navigate).
+
+**Empty state:** "No at-risk contacts. Your relationships are healthy!" with a subtle checkmark icon.
+
+---
+
+### Card B — Outbound Pending (Left Column)
+
+**Header:** "Waiting for Reply" with an amber indicator and count badge.
+
+**Content:** List of contacts. Each row:
+
+- **Left side:** Name (bold), "You emailed X days ago" in muted text.
+- **Right side:** Days pending badge, "Draft Follow-Up" button.
+
+**Interactions:**
+
+- Row click → `/people/[id]`.
+- Draft button → open DraftSheet.
+
+**Empty state:** "No pending replies. You're all caught up!"
+
+---
+
+### Card C — Upcoming Meetings (Left Column)
+
+**Header:** "Upcoming Meetings" with a calendar icon and count.
+
+**Content:** List of meetings, grouped or listed chronologically. Each item:
+
+- **Meeting title** (bold).
+- **Date/time** formatted nicely (e.g., "Tomorrow at 2:00 PM", "Wed, Jan 15 at 10:00 AM").
+- **Attendees:** Show first 2 attendee names as clickable chips/badges. If more than 2, show "+X more". If any attendee is "At Risk", show a small red dot on their chip.
+
+**Interactions:**
+
+- Click attendee name → navigate to `/people/[contactId]`.
+- Click meeting row → could expand to show all attendees, or just navigate to first attendee.
+
+**Empty state:** "No meetings in the next 7 days."
+
+---
+
+### Card D — Quick Stats (Right Column, Top)
+
+A compact card with 4 stats in a 2×2 grid:
+
+| Total Contacts   | At Risk       |
+| ---------------- | ------------- |
+| Outbound Pending | Activity (7d) |
+
+Each stat: large number, small label below. Use subtle color accents:
+
+- At Risk count in red.
+- Outbound Pending in amber.
+- Activity in emerald.
+- Total in white/zinc.
+
+---
+
+### Card E — Executive Brief (Right Column, Bottom)
+
+**Header:** "Today's Brief" with timestamp of last generation.
+
+**Content:**
+
+- If a brief exists: render the content as formatted text. Use proper paragraph spacing. If Gemini returns markdown, render it (use a lightweight markdown renderer or just handle paragraphs/lists).
+- "Generate Brief" button at the top of the card.
+
+**Interactions:**
+
+- Click "Generate Brief" → call `POST /api/brief`. Show loading skeleton replacing the content area. On success, update the displayed brief.
+
+**Empty state:** A centered message: "Generate your first daily brief" with the Generate button prominent.
+
+---
+
+### State Management for DraftSheet:
+
+Use React state at the dashboard page level to manage the DraftSheet:
+
+```tsx
+const [draftContact, setDraftContact] = useState<{
+  id: string;
+  name: string | null;
+  email: string;
+  score: number;
+  riskLabel: string;
+} | null>(null);
+```
+
+- When any "Draft Follow-Up" button is clicked, set `draftContact` to that contact's data.
+- Render `<DraftSheet open={!!draftContact} onOpenChange={...} {...draftContact} />` once at the page level.
+
+**Checkpoint:** Dashboard renders all 5 cards with real data, DraftSheet opens from At-Risk and Outbound Pending cards, Brief generation works, navigation to people pages works.
+
+---
+
+## STEP 5 — Update Person Detail Page
+
+Update `/app/people/[id]/page.tsx` to also use the DraftSheet instead of inline draft display:
+
+1. Replace the existing inline "Generate Follow-Up Draft" section with a "Draft Follow-Up" button that opens the DraftSheet.
+2. Keep the interaction timeline as-is.
+3. Add the score explanation to the header:
+   - Below the score badge, show a small muted text explaining the score factors:
+   - "Last contact: X days ago · Y emails / Z meetings (30d)"
+   - This helps the user understand WHY a contact has that score.
+
+**Checkpoint:** Person detail page uses the shared DraftSheet component.
+
+---
+
+## STEP 6 — Loading, Empty States, and Polish
+
+Go through every component and ensure:
+
+### Loading States:
+
+- Dashboard page: full skeleton layout (gray pulsing cards matching the 2-column layout).
+- Each card: individual skeleton if data is partially loaded.
+- DraftSheet: skeleton for subject line and body.
+- Brief: skeleton text block.
+- Use shadcn/ui `Skeleton` component consistently.
+
+### Empty States:
+
+- Each card has a specific empty state message (defined above in Step 4).
+- No contacts at all (fresh account) → dashboard shows a single centered message: "Welcome to Jellyfish. Sync your email to get started." with a link/button to `/ingest`.
+- Style empty states with muted text and subtle icons. Not sad or negative — calm and guiding.
+
+### Error States:
+
+- API failures show a toast notification (use shadcn/ui `Toast` or `Sonner`).
+- DraftSheet shows inline error with retry.
+- Dashboard shows "Something went wrong. Refresh to try again." if the main API call fails.
+
+### Micro-polish:
+
+- Hover states on all clickable rows (subtle `bg-zinc-800/50` on hover).
+- Smooth transitions on DraftSheet open/close.
+- Consistent spacing: `gap-6` between cards, `p-6` padding inside cards.
+- Card headers: `text-lg font-semibold text-zinc-100`. Muted text: `text-zinc-400`. Borders: `border-zinc-800`.
+- Buttons: use shadcn/ui Button with `variant="outline"` for secondary actions, `variant="default"` for primary.
+- Ensure the sidebar "Today" link is active/highlighted when on `/dashboard`.
+
+**Checkpoint:** All loading, empty, and error states work. UI feels polished and consistent.
+
+---
+
+## STEP 7 — Final Integration Test + Demo Prep
+
+### Test this exact flow:
+
+1. Open `localhost:3000` → redirects to login if not authed.
+2. Sign in → lands on `/dashboard`.
+3. Dashboard loads with real data (assuming ingestion was run before):
+   - At-Risk contacts visible with scores.
+   - Outbound Pending shows contacts you emailed but who haven't replied.
+   - Upcoming Meetings listed with attendee chips.
+   - Quick Stats show accurate numbers.
+4. Click "Draft Follow-Up" on an at-risk contact → DraftSheet slides in → contextual draft appears.
+5. Click "Copy to Clipboard" → works.
+6. Click "Regenerate" → new draft appears.
+7. Close sheet. Click a contact row → navigates to `/people/[id]`.
+8. On person detail, click "Draft Follow-Up" → same DraftSheet works.
+9. Back to dashboard. Click "Generate Brief" → brief appears in the right column.
+10. Check console for telemetry events firing correctly.
+
+### Fix any issues found during this flow.
+
+### Verify:
+
+- No console errors or warnings.
+- No layout shifts during loading.
+- All TypeScript strict mode — no `any` types.
+- Responsive: check at 1440px and 768px widths.
+
+**If this full flow works smoothly, Stage 2 is complete.**
