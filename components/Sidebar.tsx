@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { signOut } from "next-auth/react";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Users, RefreshCw } from "lucide-react";
+import { LayoutDashboard, Users, RefreshCw, LogOut } from "lucide-react";
 
 const links = [
   { href: "/dashboard", label: "Today", icon: LayoutDashboard },
@@ -39,6 +40,15 @@ export function Sidebar() {
           </Link>
         ))}
       </nav>
+      <div className="p-4 border-t border-zinc-800">
+        <button
+          onClick={() => signOut({ callbackUrl: "/login" })}
+          className="flex items-center gap-3 px-3 py-2 rounded-md text-sm w-full text-zinc-400 hover:text-white hover:bg-zinc-800/50 transition-colors"
+        >
+          <LogOut size={16} />
+          Sign Out
+        </button>
+      </div>
     </aside>
   );
 }
