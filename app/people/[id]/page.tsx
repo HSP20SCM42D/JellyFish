@@ -2,7 +2,7 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { redirect, notFound } from "next/navigation";
 import { RiskBadge } from "@/components/RiskBadge";
-import { DraftSection } from "@/components/DraftSection";
+import { PersonDraftButton } from "@/components/PersonDraftButton";
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 
@@ -11,21 +11,50 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
   if (!session?.user?.id) redirect("/login");
 
   const { id } = await params;
+  const userId = session.user.id;
 
-  const contact = await prisma.contact.findFirst({
-    where: { id, userId: session.user.id },
-    include: {
-      interactions: {
-        orderBy: { timestamp: "desc" },
-        take: 50,
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const [contact, emailCount30d, meetingCount30d] = await Promise.all([
+    prisma.contact.findFirst({
+      where: { id, userId },
+      include: {
+        interactions: {
+          orderBy: { timestamp: "desc" },
+          take: 50,
+        },
       },
-    },
-  });
+    }),
+    prisma.interaction.count({
+      where: {
+        contactId: id,
+        userId,
+        type: { in: ["EMAIL_IN", "EMAIL_OUT"] },
+        timestamp: { gte: thirtyDaysAgo },
+      },
+    }),
+    prisma.interaction.count({
+      where: {
+        contactId: id,
+        userId,
+        type: "MEETING",
+        timestamp: { gte: thirtyDaysAgo },
+      },
+    }),
+  ]);
 
   if (!contact) notFound();
 
+  const daysSinceLast = contact.lastInteractionAt
+    ? Math.floor(
+        (Date.now() - new Date(contact.lastInteractionAt).getTime()) /
+          (1000 * 60 * 60 * 24)
+      )
+    : null;
+
   return (
     <div className="space-y-8 max-w-2xl">
+      {/* Header */}
       <div>
         <Link
           href="/people"
@@ -44,18 +73,26 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
             <RiskBadge label={contact.riskLabel} score={contact.score} />
           </div>
         </div>
-        {contact.lastInteractionAt && (
-          <p className="text-zinc-500 text-xs mt-2">
-            Last contact:{" "}
-            {new Date(contact.lastInteractionAt).toLocaleDateString("en-US", {
-              weekday: "long",
-              month: "long",
-              day: "numeric",
-              year: "numeric",
-            })}
-          </p>
-        )}
+
+        {/* Score context */}
+        <p className="text-zinc-500 text-xs mt-2">
+          {daysSinceLast !== null
+            ? `Last contact: ${daysSinceLast === 0 ? "today" : `${daysSinceLast} day${daysSinceLast !== 1 ? "s" : ""} ago`}`
+            : "No interactions yet"}
+          {" · "}
+          {emailCount30d} email{emailCount30d !== 1 ? "s" : ""} / {meetingCount30d} meeting
+          {meetingCount30d !== 1 ? "s" : ""} (30d)
+        </p>
       </div>
+
+      {/* Follow-Up Draft */}
+      <PersonDraftButton
+        contactId={contact.id}
+        contactName={contact.name}
+        contactEmail={contact.email}
+        contactScore={contact.score}
+        contactRiskLabel={contact.riskLabel}
+      />
 
       {/* Interaction Timeline */}
       <div>
@@ -102,8 +139,6 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
           </ul>
         )}
       </div>
-
-      <DraftSection contactId={contact.id} contactName={contact.name || contact.email} />
     </div>
   );
 }

@@ -9,8 +9,8 @@ import { RefreshCw } from "lucide-react";
 export default function IngestPage() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{
-    contactsProcessed: number;
-    interactionsCreated: number;
+    gmail: { contactsProcessed: number; interactionsCreated: number };
+    calendar: { contactsProcessed: number; meetingsCreated: number; error: string | null };
     completedAt: string;
   } | null>(null);
 
@@ -21,8 +21,8 @@ export default function IngestPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Sync failed");
       setResult({
-        contactsProcessed: data.contactsProcessed,
-        interactionsCreated: data.interactionsCreated,
+        gmail: data.gmail,
+        calendar: data.calendar,
         completedAt: new Date().toLocaleString(),
       });
       toast.success("Sync complete!");
@@ -64,15 +64,46 @@ export default function IngestPage() {
           </Button>
 
           {result && (
-            <div className="mt-4 p-4 bg-zinc-800 rounded-lg text-sm space-y-1">
+            <div className="mt-4 p-4 bg-zinc-800 rounded-lg text-sm space-y-3">
               <p className="text-emerald-400 font-medium">Sync complete</p>
-              <p className="text-zinc-300">
-                Contacts processed: <span className="text-white font-medium">{result.contactsProcessed}</span>
+
+              {/* Gmail */}
+              <div className="space-y-1">
+                <p className="text-zinc-400 text-xs uppercase tracking-wider">Gmail</p>
+                <p className="text-zinc-300">
+                  Contacts: <span className="text-white font-medium">{result.gmail.contactsProcessed}</span>
+                </p>
+                <p className="text-zinc-300">
+                  Emails: <span className="text-white font-medium">{result.gmail.interactionsCreated}</span>
+                </p>
+              </div>
+
+              {/* Calendar */}
+              <div className="space-y-1">
+                <p className="text-zinc-400 text-xs uppercase tracking-wider">Calendar</p>
+                {result.calendar.error ? (
+                  <p className="text-red-400 text-xs">{result.calendar.error}</p>
+                ) : (
+                  <>
+                    <p className="text-zinc-300">
+                      Contacts: <span className="text-white font-medium">{result.calendar.contactsProcessed}</span>
+                    </p>
+                    <p className="text-zinc-300">
+                      Meetings: <span className="text-white font-medium">{result.calendar.meetingsCreated}</span>
+                    </p>
+                    {result.calendar.meetingsCreated === 0 && (
+                      <p className="text-amber-400 text-xs mt-1">
+                        No meetings found. Upcoming Meetings only shows calendar events
+                        that have other people invited (with email addresses).
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <p className="text-zinc-500 text-xs pt-1 border-t border-zinc-700">
+                Last synced: {result.completedAt}
               </p>
-              <p className="text-zinc-300">
-                Interactions created: <span className="text-white font-medium">{result.interactionsCreated}</span>
-              </p>
-              <p className="text-zinc-500 text-xs mt-2">Last synced: {result.completedAt}</p>
             </div>
           )}
         </CardContent>

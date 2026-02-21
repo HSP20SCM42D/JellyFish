@@ -14,11 +14,30 @@ export async function POST() {
     const { id: userId, email: userEmail } = session.user;
 
     const gmailResult = await ingestGmail(userId, userEmail);
-    const calendarResult = await ingestCalendar(userId, userEmail);
+
+    let calendarResult = { contactsUpserted: 0, interactionsCreated: 0 };
+    let calendarError: string | null = null;
+    try {
+      calendarResult = await ingestCalendar(userId, userEmail);
+    } catch (err) {
+      calendarError = err instanceof Error ? err.message : "Calendar sync failed";
+      console.error("[ingest] Calendar error:", calendarError);
+    }
+
     await recomputeScores(userId);
 
     return NextResponse.json({
       success: true,
+      gmail: {
+        contactsProcessed: gmailResult.contactsUpserted,
+        interactionsCreated: gmailResult.interactionsCreated,
+      },
+      calendar: {
+        contactsProcessed: calendarResult.contactsUpserted,
+        meetingsCreated: calendarResult.interactionsCreated,
+        error: calendarError,
+      },
+      // keep legacy fields so existing UI doesn't break
       contactsProcessed: gmailResult.contactsUpserted + calendarResult.contactsUpserted,
       interactionsCreated: gmailResult.interactionsCreated + calendarResult.interactionsCreated,
     });
